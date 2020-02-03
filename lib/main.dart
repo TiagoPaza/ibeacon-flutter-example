@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -9,15 +10,15 @@ import 'package:http/http.dart' as http;
 import 'package:webview_flutter/webview_flutter.dart';
 
 void main() {
-  runApp(MyApp());
+  runApp(FlutterBeacons());
 }
 
-class MyApp extends StatefulWidget {
+class FlutterBeacons extends StatefulWidget {
   @override
-  _MyAppState createState() => _MyAppState();
+  _FlutterBeaconsState createState() => _FlutterBeaconsState();
 }
 
-class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
+class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObserver {
   final StreamController<BluetoothState> streamController = StreamController();
   StreamSubscription<BluetoothState> _streamBluetooth;
   StreamSubscription<RangingResult> _streamRanging;
@@ -48,7 +49,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
     _fcm.configure(
       onMessage: (Map<String, dynamic> message) async {
-        print("onMessage: $message");
+        print('onMessage: $message');
+
         showDialog(
           context: context,
           builder: (context) => AlertDialog(
@@ -66,11 +68,11 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
         );
       },
       onLaunch: (Map<String, dynamic> message) async {
-        print("onLaunch: $message");
+        print('onLaunch: $message');
         // TODO optional
       },
       onResume: (Map<String, dynamic> message) async {
-        print("onResume: $message");
+        print('onResume: $message');
         // TODO optional
       },
     );
@@ -78,9 +80,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
 
   listeningState() async {
     print('Listening to bluetooth state');
-    _streamBluetooth = flutterBeacon
-        .bluetoothStateChanged()
-        .listen((BluetoothState state) async {
+
+    _streamBluetooth = flutterBeacon.bluetoothStateChanged().listen((BluetoothState state) async {
       print('BluetoothState = $state');
       streamController.add(state);
 
@@ -100,11 +101,9 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
     final bluetoothState = await flutterBeacon.bluetoothState;
     final bluetoothEnabled = bluetoothState == BluetoothState.stateOn;
     final authorizationStatus = await flutterBeacon.authorizationStatus;
-    final authorizationStatusOk =
-        authorizationStatus == AuthorizationStatus.allowed ||
-            authorizationStatus == AuthorizationStatus.always;
-    final locationServiceEnabled =
-        await flutterBeacon.checkLocationServicesIfEnabled;
+    final authorizationStatusOk = authorizationStatus == AuthorizationStatus.allowed ||
+        authorizationStatus == AuthorizationStatus.always;
+    final locationServiceEnabled = await flutterBeacon.checkLocationServicesIfEnabled;
 
     setState(() {
       this.authorizationStatusOk = authorizationStatusOk;
@@ -116,9 +115,8 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   initScanBeacon() async {
     await flutterBeacon.initializeScanning;
     await checkAllRequirements();
-    if (!authorizationStatusOk ||
-        !locationServiceEnabled ||
-        !bluetoothEnabled) {
+
+    if (!authorizationStatusOk || !locationServiceEnabled || !bluetoothEnabled) {
       print('RETURNED, authorizationStatusOk=$authorizationStatusOk, '
           'locationServiceEnabled=$locationServiceEnabled, '
           'bluetoothEnabled=$bluetoothEnabled');
@@ -139,10 +137,10 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
       }
     }
 
-    _streamRanging =
-        flutterBeacon.ranging(regions).listen((RangingResult result) {
-      print(result.beacons);
+    _streamRanging = flutterBeacon.ranging(regions).listen((RangingResult result) {
       if (result != null && mounted) {
+        print(result.beacons);
+
         setState(() {
           _regionBeacons[result.region] = result.beacons;
           _beacons.clear();
@@ -150,16 +148,23 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             _beacons.addAll(list);
           });
           _beacons.sort(_compareParameters);
-        });
-        String DATA =
-            "{\"notification\": {\"body\": \"Seja bem-vindo ao PLANETA!\",\"title\": \"Olá cliente!\"}, \"priority\": \"high\", \"to\": \"eCVSaBz6fcQ:APA91bHNuASkEZr58-vexom5QpirMtTclvKXToVTD75zh2Tt6xDwrOHmuz4F0N0bjqS50_s8PG9pcuayRzYZDP21i5kqnr1gpy8KWaxPWpVqyA7Sbne4P9tSW_yLLc5C_jBaJLrUTRLB\"}";
-        http.post("https://fcm.googleapis.com/fcm/send", body: DATA, headers: {
-          "Content-Type": "application/json",
-          "Authorization":
-              "key=AAAACZyoFkw:APA91bGl_z1c3Ui0pYnJ90IYZ0a7cbKJe1TW1W3H8IMjSuiUcs0K95kEkynAhk0eFLDldNDXHjrje1Vw2S5Nn0befbdUE1JCZR9TiIJtWp_NuGG6vlN0Hipfuvo-09KTqpb4447AJIpl"
-        });
 
-        _streamRanging.pause();
+          Notification notification = Notification(
+              'Olá cliente!',
+              'Seja bem-vindo ao mercado.',
+              'hight',
+              'https://encrypted-tbn0.gstatic.com/images?q=tbn%3AANd9GcQ59nKdlq9sszbES6iVUGLn90dCny9ui8XlU-gDnb4KHzr_04uO',
+              'eCVSaBz6fcQ:APA91bHNuASkEZr58-vexom5QpirMtTclvKXToVTD75zh2Tt6xDwrOHmuz4F0N0bjqS50_s8PG9pcuayRzYZDP21i5kqnr1gpy8KWaxPWpVqyA7Sbne4P9tSW_yLLc5C_jBaJLrUTRLB');
+
+          String data = jsonEncode(notification);
+
+          http.post('https://fcm.googleapis.com/fcm/send', body: data, headers: {
+            'Content-Type': 'application/json',
+            'Authorization':
+            'key=AAAACZyoFkw:APA91bGl_z1c3Ui0pYnJ90IYZ0a7cbKJe1TW1W3H8IMjSuiUcs0K95kEkynAhk0eFLDldNDXHjrje1Vw2S5Nn0befbdUE1JCZR9TiIJtWp_NuGG6vlN0Hipfuvo-09KTqpb4447AJIpl'
+          });
+          _streamRanging.pause();
+        });
       }
     });
   }
@@ -190,6 +195,7 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) async {
     print('AppLifecycleState = $state');
+
     if (state == AppLifecycleState.resumed) {
       if (_streamBluetooth != null && _streamBluetooth.isPaused) {
         _streamBluetooth.resume();
@@ -320,14 +326,12 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
                 mainAxisSize: MainAxisSize.max,
                 children: <Widget>[
                   Flexible(
-                      child: Text(
-                          'Major: ${beacon.major}\nMinor: ${beacon.minor}',
+                      child: Text('Major: ${beacon.major}\nMinor: ${beacon.minor}',
                           style: TextStyle(fontSize: 14.0)),
                       flex: 1,
                       fit: FlexFit.tight),
                   Flexible(
-                      child: Text(
-                          'Accuracy: ${beacon.accuracy}m\nRSSI: ${beacon.rssi}',
+                      child: Text('Accuracy: ${beacon.accuracy}m\nRSSI: ${beacon.rssi}',
                           style: TextStyle(fontSize: 14.0)),
                       flex: 2,
                       fit: FlexFit.tight)
@@ -336,5 +340,31 @@ class _MyAppState extends State<MyApp> with WidgetsBindingObserver {
             );
           })).toList(),
     );
+  }
+}
+
+class Notification {
+  Notification(this.title, this.body, this.priority, this.icon, this.to);
+
+  final String title;
+  final String body;
+  final String priority;
+  final String icon;
+  final String to;
+
+  // named constructor
+  Notification.fromJson(Map<String, dynamic> json)
+      : title = json['title'],
+        body = json['priority'],
+        priority = json['priority'],
+        icon = json['icon'],
+        to = json['to'];
+
+  // method
+  Map<String, dynamic> toJson() {
+    return {
+      'notification': {'title': title, 'body': body, 'priority': priority, 'icon': icon},
+      'to': to
+    };
   }
 }
