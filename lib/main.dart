@@ -1,16 +1,35 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_beacon/flutter_beacon.dart';
-import 'package:http/http.dart' as http;
-import 'package:webview_flutter/webview_flutter.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:rxdart/subjects.dart';
+//import 'package:webview_flutter/webview_flutter.dart';
 
-void main() {
-  runApp(FlutterBeacons());
+final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin =
+    FlutterLocalNotificationsPlugin();
+
+// Streams are created so that app can respond to notification-related events since the plugin is initialised in the `main` function
+final BehaviorSubject<ReceivedNotification> didReceiveLocalNotificationSubject =
+    BehaviorSubject<ReceivedNotification>();
+
+final BehaviorSubject<String> selectNotificationSubject = BehaviorSubject<String>();
+
+class ReceivedNotification {
+  final int id;
+  final String title;
+  final String body;
+  final String payload;
+
+  ReceivedNotification(
+      {@required this.id, @required this.title, @required this.body, @required this.payload});
+}
+
+Future<void> main() async {
+  runApp(MaterialApp(home: FlutterBeacons()));
 }
 
 class FlutterBeacons extends StatefulWidget {
@@ -20,24 +39,37 @@ class FlutterBeacons extends StatefulWidget {
 
 class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObserver {
   final StreamController<BluetoothState> streamController = StreamController();
-  StreamSubscription<BluetoothState> _streamBluetooth;
-  StreamSubscription<RangingResult> _streamRanging;
-  Completer<WebViewController> _controller = Completer<WebViewController>();
-
   final _regionBeacons = <Region, List<Beacon>>{};
   final _beacons = <Beacon>[];
+
+  StreamSubscription<BluetoothState> _streamBluetooth;
+  StreamSubscription<RangingResult> _streamRanging;
+
+  //  Completer<WebViewController> _controller = Completer<WebViewController>();
+  FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin;
+
   bool authorizationStatusOk = false;
   bool locationServiceEnabled = false;
   bool bluetoothEnabled = false;
+
+  var _currentBeacon;
 
   @override
   void initState() {
     WidgetsBinding.instance.addObserver(this);
 
-    super.initState();
-
     listeningState();
     listeningFCM();
+
+    var initializationSettingsAndroid = new AndroidInitializationSettings('app_icon');
+    var initializationSettingsIOS = new IOSInitializationSettings();
+    var initializationSettings =
+        new InitializationSettings(initializationSettingsAndroid, initializationSettingsIOS);
+
+    flutterLocalNotificationsPlugin = new FlutterLocalNotificationsPlugin();
+    flutterLocalNotificationsPlugin.initialize(initializationSettings);
+
+    super.initState();
   }
 
   listeningFCM() {
@@ -50,26 +82,11 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
     _fcm.configure(
       onMessage: (Map<String, dynamic> message) async {
         print('onMessage: $message');
-
-        showDialog(
-          context: context,
-          builder: (context) => AlertDialog(
-            content: ListTile(
-              title: Text(message['notification']['title']),
-              subtitle: Text(message['notification']['body']),
-            ),
-            actions: <Widget>[
-              FlatButton(
-                child: Text('Ok'),
-                onPressed: () => Navigator.of(context).pop(),
-              ),
-            ],
-          ),
-        );
+        _alertDialog(context, message['notification']['title'], message['notification']['body']);
       },
       onLaunch: (Map<String, dynamic> message) async {
         print('onLaunch: $message');
-        // TODO optional
+        _alertDialog(context, message['notification']['title'], message['notification']['body']);
       },
       onResume: (Map<String, dynamic> message) async {
         print('onResume: $message');
@@ -82,7 +99,6 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
     print('Listening to bluetooth state');
 
     _streamBluetooth = flutterBeacon.bluetoothStateChanged().listen((BluetoothState state) async {
-      print('BluetoothState = $state');
       streamController.add(state);
 
       switch (state) {
@@ -122,12 +138,23 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
           'bluetoothEnabled=$bluetoothEnabled');
       return;
     }
+
     final regions = <Region>[
       Region(
-        identifier: 'Estimote',
-        proximityUUID: 'B9407F30-F5F8-466E-AFF9-25556B57FE6D',
-//        proximityUUID: '',
-      ),
+          identifier: 'Beacon 1',
+          proximityUUID: 'F0A4B678-6F21-45C4-AF52-C73C07AE668D',
+          major: 30389,
+          minor: 21485),
+      Region(
+          identifier: 'Beacon 2',
+          proximityUUID: 'B9407F30-F5F8-466E-AFF9-25556B57FE6E',
+          major: 55593,
+          minor: 40398),
+      Region(
+          identifier: 'Beacon 3',
+          proximityUUID: '6D36AC22-F0DE-43BE-8B6A-90C2925211A3',
+          major: 1976,
+          minor: 20868)
     ];
 
     if (_streamRanging != null) {
@@ -139,8 +166,6 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
 
     _streamRanging = flutterBeacon.ranging(regions).listen((RangingResult result) {
       if (result != null && mounted) {
-        print(result.beacons);
-
         setState(() {
           _regionBeacons[result.region] = result.beacons;
           _beacons.clear();
@@ -148,22 +173,6 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
             _beacons.addAll(list);
           });
           _beacons.sort(_compareParameters);
-
-          Notification notification = Notification(
-              'Olá cliente!',
-              'Seja bem-vindo ao mercado.',
-              'hight',
-              'https://encrypted-tbn0.gstatic.com/images?q=tbn%3AANd9GcQ59nKdlq9sszbES6iVUGLn90dCny9ui8XlU-gDnb4KHzr_04uO',
-              'eCVSaBz6fcQ:APA91bHNuASkEZr58-vexom5QpirMtTclvKXToVTD75zh2Tt6xDwrOHmuz4F0N0bjqS50_s8PG9pcuayRzYZDP21i5kqnr1gpy8KWaxPWpVqyA7Sbne4P9tSW_yLLc5C_jBaJLrUTRLB');
-
-          String data = jsonEncode(notification);
-
-          http.post('https://fcm.googleapis.com/fcm/send', body: data, headers: {
-            'Content-Type': 'application/json',
-            'Authorization':
-            'key=AAAACZyoFkw:APA91bGl_z1c3Ui0pYnJ90IYZ0a7cbKJe1TW1W3H8IMjSuiUcs0K95kEkynAhk0eFLDldNDXHjrje1Vw2S5Nn0befbdUE1JCZR9TiIJtWp_NuGG6vlN0Hipfuvo-09KTqpb4447AJIpl'
-          });
-          _streamRanging.pause();
         });
       }
     });
@@ -233,138 +242,228 @@ class _FlutterBeaconsState extends State<FlutterBeacons> with WidgetsBindingObse
       darkTheme: ThemeData(
         brightness: Brightness.dark,
       ),
-      home: Scaffold(
-        appBar: AppBar(
-          title: const Text('Flutter Beacon'),
-          centerTitle: false,
-          actions: <Widget>[
-            if (!authorizationStatusOk)
-              IconButton(
-                  icon: Icon(Icons.portable_wifi_off),
-                  color: Colors.red,
-                  onPressed: () async {
-                    await flutterBeacon.requestAuthorization;
-                  }),
-            if (!locationServiceEnabled)
-              IconButton(
-                  icon: Icon(Icons.location_off),
-                  color: Colors.red,
-                  onPressed: () async {
-                    if (Platform.isAndroid) {
-                      await flutterBeacon.openLocationSettings;
-                    } else if (Platform.isIOS) {}
-                  }),
-            StreamBuilder<BluetoothState>(
-              builder: (context, snapshot) {
-                if (snapshot.hasData) {
-                  final state = snapshot.data;
-
-                  if (state == BluetoothState.stateOn) {
-                    return IconButton(
-                      icon: Icon(Icons.bluetooth_connected),
-                      onPressed: () {},
-                      color: Colors.lightBlueAccent,
-                    );
-                  }
-
-                  if (state == BluetoothState.stateOff) {
-                    return IconButton(
-                      icon: Icon(Icons.bluetooth),
-                      onPressed: () async {
-                        if (Platform.isAndroid) {
-                          try {
-                            await flutterBeacon.openBluetoothSettings;
-                          } on PlatformException catch (e) {
-                            print(e);
-                          }
-                        } else if (Platform.isIOS) {}
-                      },
-                      color: Colors.red,
-                    );
-                  }
-
-                  return IconButton(
-                    icon: Icon(Icons.bluetooth_disabled),
-                    onPressed: () {},
-                    color: Colors.grey,
-                  );
-                }
-
-                return SizedBox.shrink();
-              },
-              stream: streamController.stream,
-              initialData: BluetoothState.stateUnknown,
-            ),
-          ],
-        ),
-        body: _beacons == null || _beacons.isEmpty
-            ? Center(child: CircularProgressIndicator())
-            : _openWebView(),
-//            _beaconsListView(context),
-      ),
+      home: Scaffold(appBar: _mountAppBar(), body: _openBeaconContainer()),
     );
   }
 
-  WebView _openWebView() {
-    return WebView(
-      initialUrl: 'https://uniom.team',
-      javascriptMode: JavascriptMode.unrestricted,
-      onWebViewCreated: (WebViewController controller) {
-        _controller.complete(controller);
+  AppBar _mountAppBar() {
+    return AppBar(
+      title: const Text('Flutter Beacon'),
+      centerTitle: false,
+      actions: <Widget>[
+        if (!authorizationStatusOk)
+          IconButton(
+              icon: Icon(Icons.portable_wifi_off),
+              color: Colors.red,
+              onPressed: () async {
+                await flutterBeacon.requestAuthorization;
+              }),
+        if (!locationServiceEnabled)
+          IconButton(
+              icon: Icon(Icons.location_off),
+              color: Colors.red,
+              onPressed: () async {
+                if (Platform.isAndroid) {
+                  await flutterBeacon.openLocationSettings;
+                } else if (Platform.isIOS) {}
+              }),
+        StreamBuilder<BluetoothState>(
+          builder: (context, snapshot) {
+            if (snapshot.hasData) {
+              final state = snapshot.data;
+
+              if (state == BluetoothState.stateOn) {
+                return IconButton(
+                  icon: Icon(Icons.bluetooth_connected),
+                  onPressed: () async {
+                    if (Platform.isAndroid) {
+                      try {
+                        await flutterBeacon.openBluetoothSettings;
+                      } on PlatformException catch (e) {
+                        print(e);
+                      }
+                    } else if (Platform.isIOS) {}
+                  },
+                  color: Colors.lightBlueAccent,
+                );
+              }
+
+              if (state == BluetoothState.stateOff) {
+                return IconButton(
+                  icon: Icon(Icons.bluetooth),
+                  onPressed: () async {
+                    if (Platform.isAndroid) {
+                      try {
+                        await flutterBeacon.openBluetoothSettings;
+                      } on PlatformException catch (e) {
+                        print(e);
+                      }
+                    } else if (Platform.isIOS) {}
+                  },
+                  color: Colors.red,
+                );
+              }
+
+              return IconButton(
+                icon: Icon(Icons.bluetooth_disabled),
+                onPressed: () {},
+                color: Colors.grey,
+              );
+            }
+
+            return SizedBox.shrink();
+          },
+          stream: streamController.stream,
+          initialData: BluetoothState.stateUnknown,
+        ),
+      ],
+    );
+  }
+
+  Container _openBeaconContainer() {
+    String image;
+
+    if (_beacons.length == 0) {
+      return Container(
+        decoration: new BoxDecoration(color: Colors.black),
+        child: new Center(
+          child: new Text(
+            'Não há beacons na região!',
+            style: new TextStyle(
+              fontSize: 18.0,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      );
+    }
+
+    switch (_beacons.first.proximityUUID) {
+      case 'F0A4B678-6F21-45C4-AF52-C73C07AE668D':
+        image = 'images/image-1.jpg';
+
+        setState(() {
+          if (_currentBeacon == null) {
+            _showNotificationWithSound(
+                1, 'Olá cliente, bem-vindo!', 'Você se conectou atráves do Beacon 1.');
+          } else {
+            if (_beacons.first.proximityUUID != _currentBeacon.proximityUUID) {
+              _showNotificationWithSound(
+                  1, 'Olá cliente, bem-vindo!', 'Você se conectou atráves do Beacon 1.');
+            }
+
+            _currentBeacon = _beacons.first;
+          }
+        });
+
+        break;
+
+      case 'B9407F30-F5F8-466E-AFF9-25556B57FE6E':
+        image = 'images/image-2.jpg';
+
+        setState(() {
+          if (_currentBeacon == null) {
+            _showNotificationWithSound(
+                2, 'Opaa! Como está indo a sua compra?', 'Você se conectou atráves do Beacon 2.');
+          } else {
+            if (_beacons.first.proximityUUID != _currentBeacon.proximityUUID) {
+              _showNotificationWithSound(
+                  2, 'Opaa! Como está indo a sua compra?', 'Você se conectou atráves do Beacon 2.');
+            }
+          }
+
+          _currentBeacon = _beacons.first;
+        });
+
+        break;
+      case '6D36AC22-F0DE-43BE-8B6A-90C2925211A3':
+        image = 'images/image-3.jpg';
+
+        setState(() {
+          if (_currentBeacon == null) {
+            _showNotificationWithSound(
+                3, 'Qual é o produto que mais te agrada?', 'Você se conectou atráves do Beacon 3.');
+          } else {
+            if (_beacons.first.proximityUUID != _currentBeacon.proximityUUID) {
+              _showNotificationWithSound(3, 'Qual é o produto que mais te agrada?',
+                  'Você se conectou atráves do Beacon 3.');
+            }
+          }
+
+          _currentBeacon = _beacons.first;
+        });
+        break;
+    }
+
+    if (_currentBeacon != null) {
+      print(_currentBeacon.proximityUUID);
+    }
+
+    return Container(
+      decoration: new BoxDecoration(
+          image: DecorationImage(
+            image: new AssetImage(image),
+            fit: BoxFit.fill,
+          )),
+    );
+  }
+
+  void _alertDialog(BuildContext context, String title, String content) {
+    showDialog(
+      context: context,
+      barrierDismissible: false, // user must tap button!
+      builder: (BuildContext context) {
+        return AlertDialog(title: Text(title), content: Text(content), actions: [
+          FlatButton(
+              child: Text('OK'),
+              onPressed: () {
+                Navigator.of(context).pop();
+              })
+        ]);
       },
     );
   }
-
-  ListView _beaconsListView(BuildContext context) {
-    return ListView(
-      children: ListTile.divideTiles(
-          context: context,
-          tiles: _beacons.map((beacon) {
-            return ListTile(
-              title: Text(beacon.proximityUUID),
-              subtitle: new Row(
-                mainAxisSize: MainAxisSize.max,
-                children: <Widget>[
-                  Flexible(
-                      child: Text('Major: ${beacon.major}\nMinor: ${beacon.minor}',
-                          style: TextStyle(fontSize: 14.0)),
-                      flex: 1,
-                      fit: FlexFit.tight),
-                  Flexible(
-                      child: Text('Accuracy: ${beacon.accuracy}m\nRSSI: ${beacon.rssi}',
-                          style: TextStyle(fontSize: 14.0)),
-                      flex: 2,
-                      fit: FlexFit.tight)
-                ],
-              ),
-            );
-          })).toList(),
-    );
-  }
 }
 
-class Notification {
-  Notification(this.title, this.body, this.priority, this.icon, this.to);
+Future _showNotificationWithSound(int id, String title, String body) async {
+  var androidPlatformChannelSpecifics = new AndroidNotificationDetails(
+      'your channel id', 'your channel name', 'your channel description',
+      importance: Importance.Max, priority: Priority.Max);
+  var iOSPlatformChannelSpecifics = new IOSNotificationDetails(sound: "slow_spring_board.aiff");
+  var platformChannelSpecifics =
+  new NotificationDetails(androidPlatformChannelSpecifics, iOSPlatformChannelSpecifics);
 
-  final String title;
-  final String body;
-  final String priority;
-  final String icon;
-  final String to;
-
-  // named constructor
-  Notification.fromJson(Map<String, dynamic> json)
-      : title = json['title'],
-        body = json['priority'],
-        priority = json['priority'],
-        icon = json['icon'],
-        to = json['to'];
-
-  // method
-  Map<String, dynamic> toJson() {
-    return {
-      'notification': {'title': title, 'body': body, 'priority': priority, 'icon': icon},
-      'to': to
-    };
-  }
+  await flutterLocalNotificationsPlugin.show(
+    id,
+    title,
+    body,
+    platformChannelSpecifics,
+    payload: '',
+  );
 }
+
+//class Notification {
+//  Notification(this.title, this.body, this.priority, this.icon, this.to);
+//
+//  final String title;
+//  final String body;
+//  final String priority;
+//  final String icon;
+//  final String to;
+//
+//  // named constructor
+//  Notification.fromJson(Map<String, dynamic> json)
+//      : title = json['title'],
+//        body = json['priority'],
+//        priority = json['priority'],
+//        icon = json['icon'],
+//        to = json['to'];
+//
+//  // method
+//  Map<String, dynamic> toJson() {
+//    return {
+//      'notification': {'title': title, 'body': body, 'priority': priority, 'icon': icon},
+//      'to': to
+//    };
+//  }
+//}
